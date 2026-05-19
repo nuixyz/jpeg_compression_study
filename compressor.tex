@@ -1,0 +1,444 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{setspace}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{codegreen},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    breaklines=true,
+    frame=single,
+    showstringspaces=false
+}
+
+\title{\textbf{DCT-Based JPEG Compression Study}\\
+Detailed Code Explanation and Analysis}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+This project implements a simplified JPEG-style image compression system using the Discrete Cosine Transform (DCT). The objective is to study how JPEG compression works internally by applying frequency-domain transformation, quantization, and reconstruction on grayscale images.
+
+The project demonstrates:
+\begin{itemize}
+    \item Frequency-domain image processing
+    \item Lossy image compression
+    \item Quantization-based information reduction
+    \item Image quality analysis using PSNR and SSIM
+    \item Energy compaction property of DCT
+\end{itemize}
+
+\section{Library Imports}
+
+\begin{lstlisting}
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.fftpack import dctn, idctn
+from skimage.metrics import structural_similarity as ssim
+\end{lstlisting}
+
+\subsection{Explanation}
+
+\begin{itemize}
+    \item \textbf{OpenCV (cv2)} is used for image loading and processing.
+    \item \textbf{NumPy} is used for matrix operations and numerical computation.
+    \item \textbf{Matplotlib} is used for image and graph visualization.
+    \item \textbf{SciPy FFTPack} provides efficient implementations of DCT and inverse DCT.
+    \item \textbf{scikit-image} provides the Structural Similarity Index (SSIM) metric.
+\end{itemize}
+
+\section{JPEG Quantization Matrix}
+
+\begin{lstlisting}
+BASE_QUANTIZATION_MATRIX = np.array([
+    [16, 11, 10, 16, 24, 40, 51, 61],
+    [12, 12, 14, 19, 26, 58, 60, 55],
+    [14, 13, 16, 24, 40, 57, 69, 56],
+    [14, 17, 22, 29, 51, 87, 80, 62],
+    [18, 22, 37, 56, 68, 109, 103, 77],
+    [24, 35, 55, 64, 81, 104, 113, 92],
+    [49, 64, 78, 87, 103, 121, 120, 101],
+    [72, 92, 95, 98, 112, 100, 103, 99]
+], dtype=np.float32)
+\end{lstlisting}
+
+\subsection{Purpose}
+
+This matrix controls how aggressively each DCT frequency coefficient is compressed.
+
+\subsection{Why This Matrix Is Structured This Way}
+
+\begin{itemize}
+    \item Small values in the top-left preserve low-frequency coefficients.
+    \item Large values in the bottom-right heavily compress high-frequency coefficients.
+\end{itemize}
+
+This works because human vision is more sensitive to low-frequency information and less sensitive to fine high-frequency details.
+
+\section{Quality-Based Quantization Scaling}
+
+\begin{lstlisting}
+def get_quantization_matrix(quality=50):
+    quality = np.clip(quality, 1, 100)
+    scale = (5000 / quality) if quality < 50 else (200 - 2 * quality)
+    return np.clip((BASE_QUANTIZATION_MATRIX * scale + 50) / 100, 1, 255)
+\end{lstlisting}
+
+\subsection{Purpose}
+
+This function dynamically scales the JPEG quantization matrix based on a user-selected quality factor.
+
+\subsection{Quality Factor}
+
+\begin{itemize}
+    \item Low quality value $\rightarrow$ stronger compression
+    \item High quality value $\rightarrow$ better image quality
+\end{itemize}
+
+\subsection{Why Two Different Scaling Equations?}
+
+JPEG quality scaling is nonlinear.
+
+\[
+scale = \frac{5000}{Q}, \quad Q < 50
+\]
+
+\[
+scale = 200 - 2Q, \quad Q \geq 50
+\]
+
+Lower quality values produce aggressive compression while higher quality values preserve more information.
+
+\section{DCT Compression Function}
+
+\begin{lstlisting}
+def process_image_dct(image, quant_matrix):
+    h, w = image.shape
+    img_float = np.float32(image) - 128
+
+    blocks = img_float.reshape(h // 8, 8, w // 8, 8).transpose(0, 2, 1, 3)
+
+    dct_blocks = dctn(blocks, axes=(-2, -1), norm='ortho')
+    quantized = np.round(dct_blocks / quant_matrix)
+    dequantized = quantized * quant_matrix
+    recon = idctn(dequantized, axes=(-2, -1), norm='ortho')
+
+    result = recon.transpose(0, 2, 1, 3).reshape(h, w) + 128
+    return np.clip(result, 0, 255).astype(np.uint8)
+\end{lstlisting}
+
+\subsection{Step 1: Image Dimensions}
+
+\begin{lstlisting}
+h, w = image.shape
+\end{lstlisting}
+
+Gets image height and width.
+
+\subsection{Step 2: Level Shift}
+
+\begin{lstlisting}
+img_float = np.float32(image) - 128
+\end{lstlisting}
+
+Pixel values are shifted from:
+
+\[
+[0,255] \rightarrow [-128,127]
+\]
+
+This centers data around zero, improving DCT efficiency.
+
+\subsection{Step 3: Block Splitting}
+
+\begin{lstlisting}
+blocks = img_float.reshape(h // 8, 8, w // 8, 8).transpose(0, 2, 1, 3)
+\end{lstlisting}
+
+JPEG processes images in \(8 \times 8\) blocks because:
+\begin{itemize}
+    \item computationally efficient,
+    \item good balance between quality and compression,
+    \item minimizes visual artifacts.
+\end{itemize}
+
+\subsection{Why transpose()?}
+
+The transpose reorganizes axes into:
+
+\[
+(block\_row, block\_col, 8, 8)
+\]
+
+allowing simultaneous vectorized block processing.
+
+\subsection{Step 4: Forward DCT}
+
+\begin{lstlisting}
+dct_blocks = dctn(blocks, axes=(-2, -1), norm='ortho')
+\end{lstlisting}
+
+Transforms each \(8 \times 8\) block into frequency coefficients.
+
+\subsection{DCT Formula}
+
+\[
+F(u,v)=\frac{1}{4}C(u)C(v)\sum_{x=0}^{7}\sum_{y=0}^{7}
+f(x,y)\cos\left[\frac{(2x+1)u\pi}{16}\right]
+\cos\left[\frac{(2y+1)v\pi}{16}\right]
+\]
+
+\subsection{Why DCT?}
+
+DCT concentrates most image energy into low-frequency coefficients.
+
+\subsection{Step 5: Quantization}
+
+\begin{lstlisting}
+quantized = np.round(dct_blocks / quant_matrix)
+\end{lstlisting}
+
+This is the lossy compression step.
+
+\subsection{Quantization Formula}
+
+\[
+Q(u,v)=\text{round}\left(\frac{F(u,v)}{T(u,v)}\right)
+\]
+
+High-frequency coefficients become zero after quantization.
+
+\subsection{Step 6: Dequantization}
+
+\begin{lstlisting}
+dequantized = quantized * quant_matrix
+\end{lstlisting}
+
+Approximate reconstruction of DCT coefficients.
+
+\subsection{Step 7: Inverse DCT}
+
+\begin{lstlisting}
+recon = idctn(dequantized, axes=(-2, -1), norm='ortho')
+\end{lstlisting}
+
+Transforms frequency coefficients back into pixel values.
+
+\subsection{Step 8: Reconstruct Image}
+
+\begin{lstlisting}
+result = recon.transpose(0, 2, 1, 3).reshape(h, w) + 128
+\end{lstlisting}
+
+Rebuilds the original image layout and reverses the earlier level shift.
+
+\subsection{Step 9: Clipping}
+
+\begin{lstlisting}
+np.clip(result, 0, 255).astype(np.uint8)
+\end{lstlisting}
+
+Ensures all pixel values remain within the valid image range.
+
+\section{Quality Metrics}
+
+\begin{lstlisting}
+def compute_metrics(original, compressed):
+    mse = np.mean((original.astype(np.float32)
+           - compressed.astype(np.float32)) ** 2)
+
+    psnr = 100.0 if mse == 0 else \
+           20 * np.log10(255 / np.sqrt(mse))
+
+    ssim_score = ssim(original, compressed)
+
+    return mse, psnr, ssim_score
+\end{lstlisting}
+
+\subsection{Mean Squared Error (MSE)}
+
+\[
+MSE = \frac{1}{MN}\sum_{x=1}^{M}\sum_{y=1}^{N}
+[I(x,y)-K(x,y)]^2
+\]
+
+Measures average pixel error.
+
+Lower MSE indicates better reconstruction quality.
+
+\subsection{Peak Signal-to-Noise Ratio (PSNR)}
+
+\[
+PSNR = 20\log_{10}\left(\frac{255}{\sqrt{MSE}}\right)
+\]
+
+Measures signal quality in decibels.
+
+Higher PSNR indicates better quality.
+
+\subsection{Structural Similarity Index (SSIM)}
+
+SSIM measures:
+\begin{itemize}
+    \item luminance similarity,
+    \item contrast similarity,
+    \item structural similarity.
+\end{itemize}
+
+SSIM range:
+
+\[
+0 \leq SSIM \leq 1
+\]
+
+Higher SSIM means better perceptual quality.
+
+\section{DCT Coefficient Visualization}
+
+\begin{lstlisting}
+def visualize_dct_coefficients(image):
+    img_float = np.float32(image) - 128
+
+    blocks = img_float.reshape(image.shape[0] // 8,
+             8,
+             image.shape[1] // 8,
+             8).transpose(0, 2, 1, 3)
+
+    dct_blocks = dctn(blocks, axes=(-2, -1), norm='ortho')
+
+    avg_coeff = np.mean(np.abs(dct_blocks), axis=(0, 1))
+
+    plt.figure(figsize=(5, 4))
+    plt.imshow(np.log(avg_coeff + 1), cmap='hot')
+\end{lstlisting}
+
+\subsection{Purpose}
+
+Visualizes average DCT coefficient magnitude across all image blocks.
+
+\subsection{Why Use Absolute Value?}
+
+DCT coefficients may be positive or negative.
+
+Magnitude represents actual energy strength.
+
+\subsection{Why Average Across Blocks?}
+
+Shows global frequency distribution across the image.
+
+\subsection{Why Log Scale?}
+
+DCT coefficients vary significantly in magnitude.
+
+Log scaling improves visibility of smaller coefficients.
+
+\subsection{Interpretation}
+
+Bright top-left region indicates:
+\begin{itemize}
+    \item strong low-frequency energy,
+    \item dominant image structure.
+\end{itemize}
+
+Dark bottom-right region indicates:
+\begin{itemize}
+    \item weak high-frequency energy,
+    \item less important fine details.
+\end{itemize}
+
+This validates the theoretical basis of JPEG compression.
+
+\section{Image Loading and Preprocessing}
+
+\begin{lstlisting}
+image = cv2.imread("images/sample.jpg",
+                   cv2.IMREAD_GRAYSCALE)
+\end{lstlisting}
+
+Loads grayscale image.
+
+\subsection{Why Grayscale?}
+
+Simplifies implementation and analysis.
+
+\begin{lstlisting}
+image = image[:h - h % 8, :w - w % 8]
+\end{lstlisting}
+
+Ensures dimensions are divisible by 8 for block processing.
+
+\section{Compression Experiments}
+
+\begin{lstlisting}
+quality_levels = [5, 25, 50, 75, 95]
+\end{lstlisting}
+
+Multiple quality levels are tested to analyze the trade-off between:
+\begin{itemize}
+    \item compression ratio,
+    \item reconstruction quality.
+\end{itemize}
+
+\section{Visualization of Results}
+
+Compressed images are displayed at multiple quality levels.
+
+\subsection{Expected Behavior}
+
+\begin{itemize}
+    \item Low quality $\rightarrow$ visible artifacts and high compression
+    \item High quality $\rightarrow$ better reconstruction and larger size
+\end{itemize}
+
+\section{Graphs and Analysis}
+
+PSNR and SSIM graphs visualize how image quality changes with compression level.
+
+\subsection{Observations}
+
+\begin{itemize}
+    \item PSNR increases as quality increases.
+    \item SSIM approaches 1 at high quality.
+    \item Low quality factors introduce blocking artifacts.
+\end{itemize}
+
+\section{Conclusion}
+
+This project successfully demonstrates the core principles of JPEG image compression using the Discrete Cosine Transform.
+
+The experiment proves that:
+\begin{itemize}
+    \item DCT concentrates image energy into low frequencies.
+    \item Quantization enables efficient lossy compression.
+    \item High-frequency components can be removed with limited perceptual impact.
+    \item PSNR and SSIM together provide meaningful image quality evaluation.
+\end{itemize}
+
+The implementation also demonstrates the efficiency of vectorized NumPy-based block processing compared to traditional nested loop implementations.
+
+\end{document}
